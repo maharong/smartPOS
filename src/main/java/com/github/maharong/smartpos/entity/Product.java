@@ -37,4 +37,10 @@ public class Product {
         this.barcode = barcode;
         this.unitsPerPackage = unitsPerPackage;
     }
+
+    public void update(String name, int price, int unitsPerPackage) {
+        this.name = name;
+        this.price = price;
+        this.unitsPerPackage = unitsPerPackage;
+    }
 }
