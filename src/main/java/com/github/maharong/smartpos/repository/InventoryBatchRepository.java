@@ -13,4 +13,7 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
 
     // 유통기한 임박 배치 조회 (<= date)
     List<InventoryBatch> findByExpiryDateLessThanEqual(LocalDate date);
+
+    // 유통기한이 기준일보다 "이전"(expired) 이고, 수량이 남아있는 배치
+    List<InventoryBatch> findByExpiryDateBeforeAndQuantityGreaterThan(LocalDate baseDate, int quantity);
 }
