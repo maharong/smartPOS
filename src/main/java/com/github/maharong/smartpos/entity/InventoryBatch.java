@@ -7,6 +7,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 /**
  * 특정 상품의 재고를 "입고 배치" 단위로 관리하는 엔티티.
@@ -51,6 +52,15 @@ public class InventoryBatch {
      */
     @Column(nullable = false)
     private LocalDate receivedDate;
+
+    /**
+     * 배치의 마지막 점검 일시.
+     * <p>
+     * 관리자가 실사/점검을 완료했을 때 갱신한다.
+     * </p>
+     */
+    @Column
+    private LocalDateTime lastCheckedAt;
 
     /**
      * 배치를 생성한다.
@@ -99,5 +109,18 @@ public class InventoryBatch {
             throw new IllegalArgumentException("배치 수량이 충분하지 않습니다.");
         }
         this.quantity -= amount;
+    }
+
+    /**
+     * 배치를 점검 처리한다.
+     *
+     * @param checkedAt 점검 일시
+     * @throws IllegalArgumentException {@code checkedAt}가 null인 경우
+     */
+    public void markChecked(LocalDateTime checkedAt) {
+        if (checkedAt == null) {
+            throw new IllegalArgumentException("점검 일시는 null일 수 없습니다.");
+        }
+        this.lastCheckedAt = checkedAt;
     }
 }

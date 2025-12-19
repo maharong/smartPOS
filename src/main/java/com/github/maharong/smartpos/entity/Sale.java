@@ -34,6 +34,15 @@ public class Sale {
     @Column(nullable = false, length = 20)
     private SaleStatus status; // 판매 상태 (결제 완료, 취소, 환불 등)
 
+    @Column(nullable = false)
+    private long cashAmount; // 현금 결제 금액
+
+    @Column(nullable = false)
+    private long cardAmount; // 카드 결제 금액
+
+    @Column(nullable = false)
+    private long pointAmount; // 포인트 사용 금액
+
     @Builder
     public Sale(LocalDateTime soldAt, long totalPrice, PaymentMethod paymentMethod, SaleStatus status) {
         this.soldAt = soldAt;
@@ -47,5 +56,37 @@ public class Sale {
      */
     public void changeStatus(SaleStatus newStatus) {
         this.status = newStatus;
+    }
+
+    /**
+     * 총 결제 금액을 변경한다.
+     *
+     * <p>판매 생성 시 판매 라인(SaleItem) 기준으로 계산된 총액을 반영할 때 사용한다.</p>
+     *
+     * @param totalPrice 총 결제 금액(0 이상)
+     * @throws IllegalArgumentException {@code totalPrice}가 0 미만인 경우
+     */
+    public void changeTotalPrice(long totalPrice) {
+        if (totalPrice < 0) {
+            throw new IllegalArgumentException("총액은 0 이상이어야 합니다.");
+        }
+        this.totalPrice = totalPrice;
+    }
+
+    /**
+     * 결제 수단별 결제 금액을 설정한다.
+     *
+     * @param cashAmount 현금 결제 금액(0 이상)
+     * @param cardAmount 카드 결제 금액(0 이상)
+     * @param pointAmount 포인트 사용 금액(0 이상)
+     * @throws IllegalArgumentException 음수인 금액이 있는 경우
+     */
+    public void changePaymentAmounts(long cashAmount, long cardAmount, long pointAmount) {
+        if (cashAmount < 0 || cardAmount < 0 || pointAmount < 0) {
+            throw new IllegalArgumentException("결제 금액은 음수일 수 없습니다.");
+        }
+        this.cashAmount = cashAmount;
+        this.cardAmount = cardAmount;
+        this.pointAmount = pointAmount;
     }
 }

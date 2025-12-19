@@ -14,10 +14,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 
+/**
+ * 재고 관련 입출고/폐기/조회 기능을 제공하는 서비스.
+ *
+ * <p>판매 출고는 유통기한 기준 선출(FEFO: First-Expire, First-Out)로 배치를 차감한다.
+ * 또한 기준일({@code baseDate}) 이전에 만료된 배치는 판매에 사용하지 않는다.</p>
+ */
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -120,25 +126,53 @@ public class InventoryService {
     }
 
     /**
-     * 판매 차감 처리를 수행한다(로그 미기록).
-     * <p>
-     * 판매 이력은 {@code Sale}/{@code SaleItem}에서 관리한다는 정책에 따라,
-     * 이 메서드는 {@link InventoryLog}를 남기지 않는다.
-     * FEFO 기준으로 {@link InventoryBatch}의 수량만 차감한다.
-     * </p>
+     * 판매 출고를 처리한다. (기본 기준일: 오늘)
      *
-     * @param product 판매 대상 상품 엔티티
-     * @param quantity 차감할 수량(양수)
-     * @throws IllegalStateException 재고가 부족한 경우
+     * <p>유통기한이 빠른 배치부터(FEFO) 재고를 차감하며, 이미 만료된 배치는 제외한다.</p>
+     *
+     * @param product 판매 상품
+     * @param quantity 판매 수량 (1 이상)
+     * @throws IllegalArgumentException {@code quantity}가 1 미만인 경우
+     * @throws IllegalStateException 재고가 부족하여 요청 수량을 모두 차감할 수 없는 경우
      */
     public void consumeForSale(Product product, int quantity) {
+        consumeForSale(product, quantity, LocalDate.now());
+    }
+
+    /**
+     * 판매 출고를 처리한다. (기준일 지정)
+     *
+     * <p>기준일 {@code baseDate}를 기준으로 만료 배치를 제외하고,
+     * 유통기한이 빠른 배치부터(FEFO) 재고를 차감한다.</p>
+     *
+     * <ul>
+     *   <li>만료 배치 제외 조건: {@code expiryDate.isBefore(baseDate)}</li>
+     *   <li>차감 순서: {@code expiryDate} 오름차순</li>
+     * </ul>
+     *
+     * @param product 판매 상품
+     * @param quantity 판매 수량 (1 이상)
+     * @param baseDate 만료 여부 판단 기준일 (예: 판매일)
+     * @throws IllegalArgumentException {@code quantity}가 1 미만인 경우
+     * @throws IllegalStateException 재고가 부족하여 요청 수량을 모두 차감할 수 없는 경우
+     */
+    public void consumeForSale(Product product, int quantity, LocalDate baseDate) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("수량은 1 이상이어야 합니다.");
+        }
+
         int remaining = quantity;
 
-        List<InventoryBatch> batches = inventoryBatchRepository.findByProductOrderByExpiryDateAsc(product);
+        // FEFO를 위해 expiryDate 오름차순으로 배치를 조회한다.
+        List<InventoryBatch> batches =
+                inventoryBatchRepository.findByProductOrderByExpiryDateAsc(product);
 
         for (InventoryBatch batch : batches) {
             if (remaining == 0) break;
             if (batch.getQuantity() <= 0) continue;
+
+            // 만료 배치는 판매에 사용하지 않는다.
+            if (batch.getExpiryDate().isBefore(baseDate)) continue;
 
             int take = Math.min(batch.getQuantity(), remaining);
             batch.decrease(take);
@@ -203,6 +237,30 @@ public class InventoryService {
     }
 
     /**
+     * 재고 현황(전체 상품 요약 리스트)을 조회한다.
+     * <p>
+     * 기본적으로 {@link ProductStatus#ACTIVE} 상품만 재고 현황에 노출하는 것을 권장한다.
+     * (발주 중단/단종 상품은 현황 화면에서 제외하기 위함)
+     * </p>
+     *
+     * @param status 조회할 상품 상태(기본: ACTIVE)
+     * @return 전체 상품 재고 요약 목록
+     */
+    @Transactional(readOnly = true)
+    public List<InventorySummaryResponse> getAllSummaries(ProductStatus status) {
+        ProductStatus targetStatus = (status == null) ? ProductStatus.ACTIVE : status;
+        LocalDate today = LocalDate.now();
+
+        return inventoryBatchRepository.findAllInventorySummaries(today, targetStatus).stream()
+                .map(row -> new InventorySummaryResponse(
+                        row.getProductId(),
+                        row.getProductName(),
+                        Math.toIntExact(row.getTotalQuantity())
+                ))
+                .toList();
+    }
+
+    /**
      * 유통기한 임박/만료 배치를 조회한다.
      * <p>
      * {@code baseDate}를 기준으로 유통기한이 {@code baseDate}와 같거나 더 이른 배치
@@ -251,7 +309,6 @@ public class InventoryService {
      * @param note 로그에 남길 메모(비어있으면 기본 문구 사용)
      * @return 처리 결과(기준일, 처리 배치 수, 폐기 수량 합계)
      */
-    @Transactional
     public DisposeExpiredResponse disposeExpiredBatches(LocalDate baseDate, String note) {
         String memo = (note == null || note.isBlank()) ? "유통기한 만료 일괄 폐기" : note;
 
@@ -280,5 +337,122 @@ public class InventoryService {
         }
 
         return new DisposeExpiredResponse(baseDate, expired.size(), totalDisposed);
+    }
+
+    /**
+     * 점검 추천 배치 목록을 생성하여 반환한다.
+     *
+     * <p>추천 조건은 다음 3가지이며, 조건에 해당하는 배치만 결과에 포함한다.</p>
+     * <ul>
+     *   <li>유통기한 만료: {@code expiryDate < baseDate}</li>
+     *   <li>유통기한 임박: 만료가 아니면서 {@code daysUntilExpiry <= expiringDays}</li>
+     *   <li>오래 미점검:
+     *     <ul>
+     *       <li>점검 기록 없음: {@code lastCheckedAt == null}</li>
+     *       <li>마지막 점검일이 오래됨: {@code lastCheckedAt.toLocalDate()} 기준 {@code staleDays} 이상 경과</li>
+     *     </ul>
+     *   </li>
+     * </ul>
+     *
+     * <p>후보 배치는 리포지토리에서 2번 조회하여 합집합으로 병합한다.</p>
+     * <ul>
+     *   <li>유통기한 기준 후보: {@code expiryDate <= baseDate + expiringDays}</li>
+     *   <li>미점검 기준 후보: {@code lastCheckedAt is null OR lastCheckedAt <= now - staleDays}</li>
+     * </ul>
+     *
+     * <p>결과는 점수({@code score}) 내림차순, 동일 점수일 경우 유통기한({@code expiryDate}) 오름차순으로 정렬한다.</p>
+     *
+     * @param baseDate 기준일(만료/임박 및 미점검 기간 계산의 기준)
+     * @param expiringDays 임박으로 판단할 남은 일수
+     * @param staleDays 오래 미점검으로 판단할 경과 일수
+     * @param limit 최대 반환 개수(0 이하이면 빈 리스트 반환)
+     * @return 점검 추천 배치 목록
+     */
+    @Transactional(readOnly = true)
+    public List<InventoryAuditRecommendationResponse> getAuditRecommendations(
+            LocalDate baseDate,
+            int expiringDays,
+            int staleDays,
+            int limit
+    ) {
+        LocalDate expiryCutoff = baseDate.plusDays(expiringDays);
+        LocalDateTime staleCutoff = LocalDateTime.now().minusDays(staleDays);
+
+        List<InventoryBatch> byExpiry = inventoryBatchRepository.findAuditCandidatesByExpiry(expiryCutoff);
+        List<InventoryBatch> byStale = inventoryBatchRepository.findAuditCandidatesByStaleCheck(staleCutoff);
+
+        Map<Long, InventoryBatch> merged = new HashMap<>();
+        for (InventoryBatch b : byExpiry) merged.put(b.getId(), b);
+        for (InventoryBatch b : byStale) merged.put(b.getId(), b);
+
+        List<InventoryAuditRecommendationResponse> results = new ArrayList<>();
+
+        for (InventoryBatch b : merged.values()) {
+            boolean expired = b.getExpiryDate().isBefore(baseDate);
+            long daysUntilExpiry = ChronoUnit.DAYS.between(baseDate, b.getExpiryDate());
+            boolean expiringSoon = !expired && daysUntilExpiry <= expiringDays;
+
+            boolean neverChecked = (b.getLastCheckedAt() == null);
+            boolean staleChecked = !neverChecked
+                    && ChronoUnit.DAYS.between(b.getLastCheckedAt().toLocalDate(), baseDate) >= staleDays;
+
+            List<String> reasons = new ArrayList<>();
+            int score = 0;
+
+            // 1) 만료 / 2) 임박
+            if (expired) {
+                reasons.add("EXPIRED");
+                score += 100;
+            } else if (expiringSoon) {
+                reasons.add("EXPIRING_SOON");
+                score += Math.max(0, 50 - (int) daysUntilExpiry);
+            }
+
+            // 3) 오래 미점검
+            if (neverChecked) {
+                reasons.add("NEVER_CHECKED");
+                score += 40;
+            } else if (staleChecked) {
+                reasons.add("STALE_CHECK");
+                score += 20;
+            }
+
+            // 어떤 조건에도 해당하지 않으면 결과에서 제외한다.
+            if (reasons.isEmpty()) continue;
+
+            results.add(new InventoryAuditRecommendationResponse(
+                    b.getId(),
+                    b.getProduct().getId(),
+                    b.getProduct().getName(),
+                    b.getExpiryDate(),
+                    b.getQuantity(),
+                    b.getLastCheckedAt(),
+                    score,
+                    reasons
+            ));
+        }
+
+        results.sort(
+                Comparator.comparingInt(InventoryAuditRecommendationResponse::score)
+                        .reversed()
+                        .thenComparing(InventoryAuditRecommendationResponse::expiryDate)
+        );
+
+        if (limit <= 0) return List.of();
+        return results.size() > limit ? results.subList(0, limit) : results;
+    }
+
+    /**
+     * 특정 배치를 점검 완료 처리한다.
+     *
+     * <p>배치의 {@code lastCheckedAt}을 현재 시각으로 갱신한다.</p>
+     *
+     * @param batchId 점검 처리할 배치 ID
+     * @throws IllegalArgumentException 배치를 찾을 수 없는 경우
+     */
+    public void checkBatch(Long batchId) {
+        InventoryBatch batch = inventoryBatchRepository.findById(batchId)
+                .orElseThrow(() -> new IllegalArgumentException("배치를 찾을 수 없습니다. id=" + batchId));
+        batch.markChecked(LocalDateTime.now());
     }
 }

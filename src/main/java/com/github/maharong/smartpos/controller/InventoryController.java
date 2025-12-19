@@ -1,6 +1,7 @@
 package com.github.maharong.smartpos.controller;
 
 import com.github.maharong.smartpos.dto.*;
+import com.github.maharong.smartpos.enums.ProductStatus;
 import com.github.maharong.smartpos.service.InventoryService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -117,5 +118,63 @@ public class InventoryController {
     ) {
         LocalDate baseDate = (date == null) ? LocalDate.now() : date;
         return inventoryService.disposeExpiredBatches(baseDate, note);
+    }
+
+    /**
+     * 재고 현황(전체 상품 요약 리스트)을 조회한다.
+     * <p>
+     * status 파라미터가 없으면 ACTIVE 기준으로 조회한다.
+     * </p>
+     *
+     * @param status 상품 상태(선택)
+     * @return 전체 상품 재고 요약 목록
+     */
+    @GetMapping("/summary")
+    public List<InventorySummaryResponse> getAllSummaries(
+            @RequestParam(required = false) ProductStatus status
+    ) {
+        return inventoryService.getAllSummaries(status);
+    }
+
+    /**
+     * 점검 추천 배치 목록을 조회한다.
+     *
+     * <p>다음 조건에 해당하는 배치를 우선순위 기준으로 반환한다.</p>
+     * <ul>
+     *   <li>유통기한 만료(EXPIRED)</li>
+     *   <li>유통기한 임박(EXPIRING_SOON)</li>
+     *   <li>오래 미점검(NEVER_CHECKED/STALE_CHECK)</li>
+     * </ul>
+     *
+     * @param date 기준일(미지정 시 오늘). 만료/임박 판단 및 미점검 기간 계산의 기준이 된다.
+     * @param expiringDays 임박으로 판단할 남은 일수(기본 14일)
+     * @param staleDays 오래 미점검으로 판단할 경과 일수(기본 30일)
+     * @param limit 최대 반환 개수(기본 50)
+     * @return 점검 추천 배치 목록(우선순위 내림차순)
+     */
+    @GetMapping("/batches/audit-recommendations")
+    public List<InventoryAuditRecommendationResponse> getAuditRecommendations(
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate date,
+            @RequestParam(defaultValue = "14") int expiringDays,
+            @RequestParam(defaultValue = "30") int staleDays,
+            @RequestParam(defaultValue = "50") int limit
+    ) {
+        LocalDate baseDate = (date == null) ? LocalDate.now() : date;
+        return inventoryService.getAuditRecommendations(baseDate, expiringDays, staleDays, limit);
+    }
+
+    /**
+     * 특정 배치를 점검 완료 처리한다.
+     *
+     * <p>배치의 {@code lastCheckedAt}을 현재 시각으로 갱신한다.</p>
+     *
+     * @param batchId 점검 처리할 배치 ID
+     * @throws IllegalArgumentException 배치를 찾을 수 없는 경우
+     */
+    @PatchMapping("/batches/{batchId}/check")
+    public void checkBatch(@PathVariable Long batchId) {
+        inventoryService.checkBatch(batchId);
     }
 }
